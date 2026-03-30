@@ -1,0 +1,59 @@
+{
+  "family": "cs218-a3-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::210190733205:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "cs218-a3-api",
+      "image": "210190733205.dkr.ecr.us-east-1.amazonaws.com/cs218-a3-api:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "command": [
+        "sh",
+        "-c",
+        "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8080"
+      ],
+      "environment": [
+        {
+          "name": "POSTGRES_HOST",
+          "value": "cs218a3yossef.ckp2omgw0usm.us-east-1.rds.amazonaws.com"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "POSTGRES_DB",
+          "value": "postgres"
+        },
+        {
+          "name": "POSTGRES_USER",
+          "value": "appuser"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:210190733205:parameter/cs218/a3/db-password"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/cs218-a3-api",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
