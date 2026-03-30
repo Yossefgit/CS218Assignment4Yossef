@@ -1,10 +1,13 @@
+from collections import deque
 import hashlib
 import json
+from threading import Lock
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -13,6 +16,13 @@ from app.models import Item, Order
 from app.schemas import ItemCreate, ItemResponse, OrderCreate, OrderCreateResponse, OrderResponse
 
 app = FastAPI()
+
+RATE_LIMIT_REQUESTS = 5
+RATE_LIMIT_WINDOW_SECONDS = 10
+RATE_LIMIT_EXCLUDED_PATHS = {"/", "/health", "/docs", "/openapi.json", "/favicon.ico"}
+
+rate_limit_buckets: dict[str, deque[float]] = {}
+rate_limit_lock = Lock()
 
 
 def get_db():
@@ -38,14 +48,69 @@ def _is_truthy(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    if request.client and request.client.host:
+        return request.client.host
+
+    return "unknown"
+
+
+def _check_rate_limit(request: Request) -> tuple[bool, dict[str, str]]:
+    if request.url.path in RATE_LIMIT_EXCLUDED_PATHS:
+        return True, {}
+
+    now = time.time()
+    client_ip = _get_client_ip(request)
+
+    with rate_limit_lock:
+        bucket = rate_limit_buckets.setdefault(client_ip, deque())
+
+        while bucket and now - bucket[0] >= RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+
+        if len(bucket) >= RATE_LIMIT_REQUESTS:
+            retry_after = max(1, int(RATE_LIMIT_WINDOW_SECONDS - (now - bucket[0])) + 1)
+            return False, {
+                "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
+                "X-RateLimit-Remaining": "0",
+                "Retry-After": str(retry_after),
+            }
+
+        bucket.append(now)
+        remaining = RATE_LIMIT_REQUESTS - len(bucket)
+
+        return True, {
+            "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
+            "X-RateLimit-Remaining": str(remaining),
+        }
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-Id") or uuid4().hex
     request.state.request_id = request_id
     start = time.time()
-    response = await call_next(request)
+
+    allowed, rate_limit_headers = _check_rate_limit(request)
+
+    if not allowed:
+        response = JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"},
+        )
+    else:
+        response = await call_next(request)
+
     response.headers["X-Request-Id"] = request_id
     response.headers["X-Response-Time-Ms"] = str(int((time.time() - start) * 1000))
+
+    for header_name, header_value in rate_limit_headers.items():
+        response.headers[header_name] = header_value
+
     print(
         json.dumps(
             {
