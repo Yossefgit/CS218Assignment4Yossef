@@ -1,3 +1,4 @@
+import os
 from collections import deque
 import hashlib
 import json
@@ -17,12 +18,27 @@ from app.schemas import ItemCreate, ItemResponse, OrderCreate, OrderCreateRespon
 
 app = FastAPI()
 
-RATE_LIMIT_REQUESTS = 5
-RATE_LIMIT_WINDOW_SECONDS = 10
 RATE_LIMIT_EXCLUDED_PATHS = {"/", "/health", "/docs", "/openapi.json", "/favicon.ico"}
 
 rate_limit_buckets: dict[str, deque[float]] = {}
 rate_limit_lock = Lock()
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed_value = int(raw_value)
+    except ValueError:
+        return default
+    if parsed_value <= 0:
+        return default
+    return parsed_value
+
+
+RATE_LIMIT_REQUESTS = _get_positive_int_env("RATE_LIMIT_REQUESTS", 5)
+RATE_LIMIT_WINDOW_SECONDS = _get_positive_int_env("RATE_LIMIT_WINDOW_SECONDS", 10)
 
 
 def get_db():
